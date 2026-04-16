@@ -9,6 +9,7 @@ from langchain_text_splitters import CharacterTextSplitter
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.documents import Document
 from langchain_community.vectorstores import Chroma
+from f110_gym.envs import F110Env  # Import F1TENTH Gym environment
 
 MODEL_OPTIONS = ['gpt-4o', 'custom', 'training']
 
@@ -39,11 +40,13 @@ class RaceLLMMPC():
         
         # ROS stuff
         if no_ROS:
-            #We only want the access members of the class
-            self.ros = None
+            # Initialize F1TENTH Gym environment
+            self.initial_poses = np.array([[0.0, 0.0, 0.0]])  # Default pose for one agent
+            self.env = F110Env(num_agents=len(self.initial_poses))  # Match number of agents to poses
+            self.state = self.env.reset(poses=self.initial_poses)
+            self.ros = None  # Ensure ROS is disabled
             self.raceline = {}
             self.odom_hz = 50
-            pass
         else:
             # ROS hook
             if ros:
