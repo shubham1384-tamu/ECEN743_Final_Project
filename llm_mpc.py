@@ -43,7 +43,7 @@ class RaceLLMMPC():
             # Initialize F1TENTH Gym environment
             self.initial_poses = np.array([[0.0, 0.0, 0.0]])  # Default pose for one agent
             self.env = F110Env(num_agents=len(self.initial_poses))  # Match number of agents to poses
-            self.state = self.env.reset(poses=self.initial_poses)
+            self.state = self.env.reset(options={'poses': self.initial_poses})
             self.ros = None  # Ensure ROS is disabled
             self.raceline = {}
             self.odom_hz = 50
