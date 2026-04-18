@@ -6,10 +6,9 @@ from scipy.spatial.transform import Rotation as R
 import roslibpy
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import CharacterTextSplitter
+from langchain.indexes import VectorstoreIndexCreator
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.documents import Document
-from langchain_community.vectorstores import Chroma
-from f110_gym.envs import F110Env  # Import F1TENTH Gym environment
 
 MODEL_OPTIONS = ['gpt-4o', 'custom', 'training']
 
@@ -43,7 +42,7 @@ class RaceLLMMPC():
             # Initialize F1TENTH Gym environment
             self.initial_poses = np.array([[0.0, 0.0, 0.0]])  # Default pose for one agent
             self.env = F110Env(num_agents=len(self.initial_poses))  # Match number of agents to poses
-            self.state = self.env.reset(options={'poses': self.initial_poses})
+            self.state = self.env.reset(poses=self.initial_poses)
             self.ros = None  # Ensure ROS is disabled
             self.raceline = {}
             self.odom_hz = 50
@@ -66,12 +65,7 @@ class RaceLLMMPC():
 
             # Dynamic Reconfigure client
             self.dyn_client = roslibpy.Service(self.ros, f'/{self.mpc_param_namespace}/set_parameters', 'dynamic_reconfigure/Reconfigure')
-            try:
-                self.raceline, self.odom_hz = self.init_race_data()
-            except Exception as e:
-                print(f"Failed to initialize race data: {e}. Setting defaults.")
-                self.raceline = {}
-                self.odom_hz = 50
+            self.raceline, self.odom_hz = self.init_race_data()
             
         # LLM stuff
         self.openai_token = openai_token
@@ -83,7 +77,7 @@ class RaceLLMMPC():
         # Decision RAG
         self.decision_index = self.load_decision_mem(openai_api_key=self.openai_token)
 
-    def load_memory(self, openai_token) -> tuple[str, Chroma]:
+    def load_memory(self, openai_token) -> tuple[str, VectorstoreIndexCreator]:
         # Base Memory
         base_mem_dir = os.path.join('./', 'prompts/mpc_base_memory.txt')
         print(f'Loading base memory from {base_mem_dir}...')
@@ -99,21 +93,10 @@ class RaceLLMMPC():
 
         # Create a VectorstoreIndex from the collected loaders
         splitter = CharacterTextSplitter(separator='#', keep_separator=False, chunk_overlap=20, chunk_size=100)
-        
-        # Load documents from loaders
-        documents = []
-        for loader in loaders:
-            documents.extend(loader.load())
-        
-        # Split documents
-        split_docs = splitter.split_documents(documents)
-        
-        # Create Chroma vectorstore
-        embeddings = OpenAIEmbeddings(api_key=openai_token)
-        index = Chroma.from_documents(documents=split_docs, embedding=embeddings)
+        index = VectorstoreIndexCreator(embedding=OpenAIEmbeddings(api_key=openai_token), text_splitter=splitter).from_loaders(loaders)
         return base_mem, index
 
-    def load_decision_mem(self, openai_api_key) -> Chroma:
+    def load_decision_mem(self, openai_api_key) -> VectorstoreIndexCreator:
         # Get Memories for the RAG
         memories_dir = 'prompts/RAG_memory.txt'
         print(f'Loading Decision RAG from {memories_dir}...')
@@ -121,16 +104,7 @@ class RaceLLMMPC():
 
         # Create a VectorstoreIndex from the collected loaders
         splitter = CharacterTextSplitter(separator='#', keep_separator=False, chunk_overlap=20, chunk_size=100)
-        
-        # Load documents
-        documents = memories_loader.load()
-        
-        # Split documents
-        split_docs = splitter.split_documents(documents)
-        
-        # Create Chroma vectorstore
-        embeddings = OpenAIEmbeddings(api_key=openai_api_key)
-        index = Chroma.from_documents(documents=split_docs, embedding=embeddings)
+        index = VectorstoreIndexCreator(embedding=OpenAIEmbeddings(api_key=openai_api_key), text_splitter=splitter).from_loaders([memories_loader])
         return index
     
     def race_mpc_interact(self, scenario, memory_nb : int=0, prompt_only: bool=False) -> str:
@@ -144,7 +118,7 @@ class RaceLLMMPC():
         #Perform RAG manually
         start_time = time.time()
         #Retrieve docs from the RAG
-        rag_sources: List[Document] = self.vector_index.similarity_search(query=RAG_query, k=memory_nb) if memory_nb > 0 else []
+        rag_sources: List[Document] = self.vector_index.vectorstore.search(query=RAG_query, search_type='similarity', k=memory_nb) if memory_nb > 0 else []
         rag_sources = [{'meta': doc.metadata, 'content': doc.page_content} for doc in rag_sources]
         LLM_query = f"""
         You are an AI assistant helping to tune the parameters of an MPC controller for an autonomous racing car. Below is the context and the task:
@@ -205,39 +179,21 @@ class RaceLLMMPC():
             return extracted_command, llm_expl, rag_sources, LLM_query, llm_out
 
     def race_reasoning(self, human_prompt: str, data_time: float=2.0, data_samples: int=5, prompt_only: bool=False, k: int = 5) -> str:
-        if self.ros is None:
-            # Dummy data for testing without ROS
-            odom_data = {
-                's_pos': [0.0] * data_samples,
-                'd_pos': [0.0] * data_samples,
-                's_speed': [0.0] * data_samples,
-                'd_speed': [0.0] * data_samples,
-                'theta': [0.0] * data_samples
-            }
-            d_left = [1.0] * data_samples
-            d_right = [1.0] * data_samples
-            reversing_bool = False
-            crashed_bool = False
-            facing_wall = False
-        else:
-            # Sample data for data_time [s] duration and downsample it to data_samples
-            echo_nb = int(data_time * self.odom_hz)
-            data_raw = self._echo_topic(topic="/car_state/odom_frenet", topic_type='nav_msgs/Odometry', number=echo_nb, timeout=2.0)
-            odom_data = self._filter_odom(odom=data_raw)
-            odom_data = {
-                key: value[::max(1, int(np.ceil(len(value)/data_samples)))] 
-                for key, value in odom_data.items()
-            }
-            d_left, d_right = self._dist_to_boundaries(data=odom_data, raceline=self.raceline)
-            reversing_bool = np.mean(odom_data['s_speed']) < -0.1
-            crashed_bool, facing_wall = self._crash_detection(d_left=d_left, d_right=d_right, odom=odom_data, raceline=self.raceline)
+        # Sample data for data_time [s] duration and downsample it to data_samples
+        echo_nb = int(data_time * self.odom_hz)
+        data_raw = self._echo_topic(topic="/car_state/odom_frenet", topic_type='nav_msgs/Odometry', number=echo_nb, timeout=2.0)
+        odom_data = self._filter_odom(odom=data_raw)
+        odom_data = {
+            key: value[::max(1, int(np.ceil(len(value)/data_samples)))] 
+            for key, value in odom_data.items()
+        }
+        d_left, d_right = self._dist_to_boundaries(data=odom_data, raceline=self.raceline)
+        reversing_bool = np.mean(odom_data['s_speed']) < -0.1
+        crashed_bool, facing_wall = self._crash_detection(d_left=d_left, d_right=d_right, odom=odom_data, raceline=self.raceline)
 
-        rag_sources = self.decision_index.similarity_search(query=human_prompt, k=k) if k > 0 else []
+        rag_sources = self.decision_index.vectorstore.search(query=human_prompt, search_type='similarity', k=k) if k > 0 else []
         rag_sources = [{'meta': doc.metadata, 'content': doc.page_content} for doc in rag_sources]
         hints = ''
-        #for hint in rag_sources:
-        #    rag_sources = [{'meta': doc.metadata, 'content': doc.page_content} for doc in rag_sources]
-        #    hints = ''
         for hint in rag_sources:
             hints += hint['content'] + "\n"
 
@@ -416,8 +372,6 @@ class RaceLLMMPC():
             return []
 
     def _set_ros_param(self, param, value, supress_print=False):
-        if self.ros is None:
-            return
         try:
             # Only set the parameter if it is in the list of MPC parameters
             if param not in self.DEFAULT_MPC_PARAMS.keys():
@@ -702,7 +656,6 @@ if __name__ == "__main__":
     parser.add_argument('--prompt', nargs='?', default='I want you to drive forwards at 2m/s', help='The scenario prompt for the LLM MPC.')
     parser.add_argument('--hostip', type=str, default='192.168.192.107', help='The host IP for the ROS connection.')
     parser.add_argument('--mpconly', action='store_true', help='Only run the MPCxLLM.')
-    parser.add_argument('--no_ROS', action='store_true', help='Run without ROS connection for testing LLM parts.')
     args = parser.parse_args()
     
     # Model options: 'gpt-4o', 'custom'
@@ -710,8 +663,7 @@ if __name__ == "__main__":
                           model=args.model,
                           host_ip=args.hostip,
                           model_dir=args.model_dir,
-                          quant=args.quant,
-                          no_ROS=args.no_ROS)
+                          quant=args.quant,)
 
     if args.mpconly:
         while True:
