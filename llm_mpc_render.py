@@ -43,7 +43,16 @@ class RaceLLMMPC():
                  no_ROS: bool = True,
                  use_f1tenth: bool = True,
                  f1tenth_map: str = 'vegas',
-                 host_ip: str = '192.168.192.105'):
+                 host_ip: str = '192.168.192.105',
+                 render_sim: bool = False,
+                 render_mode: str = 'human',
+                 sim_rollout_steps: int = 1):
+        """
+        render_sim: if True, call F110Env.render() after reset/step (needs display + working pyglet/OpenGL).
+        render_mode: 'human' (real-time-ish) or 'human_fast' (see f110_gym F110Env.render).
+        sim_rollout_steps: after each LLM MPC update, run this many physics steps with those params.
+            Default 1 is ~0.01s sim time (invisible). Use 100–300 with --render to see motion per prompt.
+        """
 
         # ── MPC params ────────────────────────────────────────────────────────
         self.DEFAULT_MPC_PARAMS = {
@@ -67,6 +76,10 @@ class RaceLLMMPC():
         self.obs         = None
         self.f1tenth_done = False
         self.param_history: List[dict] = []   # for Rstability reward term
+        self._render_sim = render_sim
+        self._render_mode = render_mode if render_mode in ('human', 'human_fast') else 'human'
+        self._render_warned = False
+        self._sim_rollout_steps = max(1, int(sim_rollout_steps))
 
         # Build a raceline from the map for Frenet calculations
         self.raceline  = self._build_raceline(_map_name)
@@ -79,6 +92,7 @@ class RaceLLMMPC():
         self.obs, _ = self.env.reset(
             options={'poses': np.array([[0.0, 0.0, np.pi / 2]])}
         )
+        self._maybe_render()
 
         # ── LLM & RAG ─────────────────────────────────────────────────────────
         self.openai_token = openai_token
@@ -131,6 +145,27 @@ class RaceLLMMPC():
         ).from_loaders([loader])
         return base_mem, index
 
+    def _maybe_render(self) -> None:
+        """Open the pyglet window and draw the current state (no-op if render_sim is False)."""
+        if not self._render_sim:
+            return
+        try:
+            self.env.unwrapped.render(mode=self._render_mode)
+        except Exception as e:
+            if not self._render_warned:
+                print(f"[WARN] Simulation rendering failed (headless, GL, or pyglet): {e}")
+                self._render_warned = True
+
+    def _rollout_with_mpc(self, merged_params: dict) -> None:
+        """
+        Step the sim repeatedly with the same MPC command so steering/speed actually move the car.
+        A single step is one physics dt (~0.01s); without a rollout the render barely changes per prompt.
+        """
+        for i in range(self._sim_rollout_steps):
+            if self.f1tenth_done:
+                break
+            self._step_f1tenth(merged_params, append_history=(i == 0))
+
     def load_decision_mem(self) -> VectorstoreIndexCreator:
         loader   = TextLoader('prompts/RAG_memory.txt')
         splitter = CharacterTextSplitter(separator='#', chunk_size=100, chunk_overlap=20)
@@ -152,14 +187,16 @@ class RaceLLMMPC():
         self.f1tenth_done = False
         self.param_history = []
         self.current_params = self.DEFAULT_MPC_PARAMS.copy()
+        self._maybe_render()
         return self.obs
 
-    def _step_f1tenth(self, mpc_params: dict) -> tuple:
+    def _step_f1tenth(self, mpc_params: dict, append_history: bool = True) -> tuple:
         """
         Convert MPC params -> gym action, step the sim, return (obs, done).
         Equivalent to _set_ros_param() + waiting for the MPC to act in ROS.
         """
-        self.param_history.append(mpc_params.copy())
+        if append_history:
+            self.param_history.append(mpc_params.copy())
         self.current_params.update(mpc_params)
 
         steer = self._mpc_params_to_steering(mpc_params)
@@ -172,6 +209,7 @@ class RaceLLMMPC():
 
         self.obs, reward, terminated, truncated, info = self.env.step(action)
         self.f1tenth_done = bool(terminated or truncated)
+        self._maybe_render()
         return self.obs, self.f1tenth_done
 
     def _get_f1tenth_odom(self) -> dict:
@@ -355,8 +393,9 @@ new_mpc_params = {{
             for p, v in extracted_command.items():
                 self._set_ros_param(p, v)
 
-            # In gym mode: step the sim with the new params
-            self._step_f1tenth({**self.DEFAULT_MPC_PARAMS, **extracted_command})
+            merged = {**self.DEFAULT_MPC_PARAMS, **extracted_command}
+            # Multiple steps so the window reflects the new behavior (one step ≈ imperceptible motion).
+            self._rollout_with_mpc(merged)
 
         return extracted_command, llm_expl, rag_sources, LLM_query, llm_out
 
@@ -448,7 +487,7 @@ Output: "Action": <your choice>
 
 if __name__ == "__main__":
     load_dotenv(find_dotenv())
-    OPENAI_API_TOKEN = os.getenv("OPENAI_API_TOKEN")
+    OPENAI_API_TOKEN = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API_TOKEN")
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--model',      choices=MODEL_OPTIONS, default='custom')
@@ -457,7 +496,32 @@ if __name__ == "__main__":
     parser.add_argument('--prompt',     type=str, default='Drive forwards at 2 m/s')
     parser.add_argument('--map_name',   type=str, default='vegas')
     parser.add_argument('--mpconly',    action='store_true')
+    parser.add_argument(
+        '--render',
+        action='store_true',
+        help='Show F1TENTH pyglet window after each reset/step (needs local display; pyglet/OpenGL).',
+    )
+    parser.add_argument(
+        '--render_mode',
+        choices=('human', 'human_fast'),
+        default='human',
+        help="F110Env.render mode: 'human' syncs roughly to real time; 'human_fast' draws as fast as possible.",
+    )
+    parser.add_argument(
+        '--sim_rollout_steps',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Physics steps after each successful MPC update. With --render, default is 150; otherwise 1. '
+             'Higher N = more visible motion per prompt (~0.01s sim time per step).',
+    )
     args = parser.parse_args()
+    rollout_steps = args.sim_rollout_steps
+    if rollout_steps is None:
+        rollout_steps = 150 if args.render else 1
+    if args.render:
+        print(f"[info] Rendering: {rollout_steps} sim steps per successful MPC update "
+              f"(~{rollout_steps * 0.01:.1f}s sim time; tune with --sim_rollout_steps)")
 
     race_llm = RaceLLMMPC(
         openai_token=OPENAI_API_TOKEN,
@@ -465,6 +529,9 @@ if __name__ == "__main__":
         model_dir=args.model_dir,
         quant=args.quant,
         f1tenth_map=args.map_name,
+        render_sim=args.render,
+        render_mode=args.render_mode,
+        sim_rollout_steps=rollout_steps,
     )
 
     if args.mpconly:
