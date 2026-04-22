@@ -1,0 +1,249 @@
+# ============================================================================
+# LLM MPC Training Configuration for F1TENTH Gym Environment
+# ============================================================================
+# This YAML configures GRPO (Group Relative Policy Optimization) training
+# of an LLM to generate MPC (Model Predictive Control) parameters for racing.
+#
+# Usage: python train/rl_mpc_train.py --config train/config/rl_mpc_train_documented.yaml
+
+# ============================================================================
+# 1. GENERAL TRAINING CONFIGURATION
+# ============================================================================
+training:
+  # Output directory for model checkpoints and logs
+  out_dir: "train/outputs"
+  
+  # Set to false to only load dataset and exit (useful for debugging)
+  train_bool: true
+  
+  # Use RAG (Retrieval-Augmented Generation) to enhance prompts with memory
+  # If true, will load context from prompts/mpc_memory.txt
+  use_rag: true
+  
+  # LoRA rank: controls number of trainable parameters
+  # Higher = more capacity but more memory/slower training
+  # Recommended: 32-128 (64 is a good default)
+  lora_rank: 64
+  
+  # Chat template format for the base model
+  # Options: "qwen-2.5", "phi-3"
+  chat_template: "qwen-2.5"
+  
+  # ROS host IP (only used if training with real robot/simulator via ROS)
+  # For F1tenth gym, this is ignored
+  ros_host_ip: "192.168.192.117"
+  
+  # F1TENTH gym configuration
+  # Map name: "vegas", "levine", "gbr", or custom
+  f1tenth_map: "vegas"
+  
+  # Physics simulation steps per MPC parameter update
+  # Lower = faster training, higher = more realistic sim feedback
+  f1tenth_steps: 50
+
+# ============================================================================
+# 2. WEIGHTS & BIASES (Experiment Tracking)
+# ============================================================================
+wandb:
+  # Enable/disable W&B logging
+  enabled: true
+  
+  # Project name on Weights & Biases dashboard
+  project: "mpc_grpo"
+  
+  # API key from environment variable
+  api_key: "${WANDB_API_KEY}"
+
+# ============================================================================
+# 3. MODEL AND TOKENIZER CONFIGURATION
+# ============================================================================
+model:
+  # Base model to fine-tune
+  # Options:
+  #   - "Qwen/Qwen2.5-3B-Instruct" (recommended, 3B params)
+  #   - "Qwen/Qwen2.5-7B-Instruct" (larger, needs more VRAM)
+  #   - "meta-llama/Llama-2-7b-chat-hf" (alternative)
+  #   - "phi-3" (smaller, faster)
+  base_model: "Qwen/Qwen2.5-3B-Instruct"
+  
+  # Use 4-bit quantization to reduce memory usage
+  # Saves ~75% of memory with minor quality impact
+  # Recommended: true (unless you have >40GB VRAM)
+  load_in_4bit: true
+  
+  # Maximum sequence length (tokens)
+  # Must be <= model's max_position_embeddings
+  # Recommended: 2048 (handles MPC tuning prompts comfortably)
+  max_seq_length: 2048
+  
+  # Enable fast inference (Unsloth optimization)
+  fast_inference: true
+  
+  # GPU memory fraction to use (0.0-1.0)
+  # 0.5 = use 50% of available VRAM
+  # Increase if training is unstable, decrease if running OOM
+  gpu_memory_utilization: 0.5
+  
+  # LoRA alpha: controls the scaling of LoRA weights
+  # Common values: 8, 16, 32, 64
+  # Higher often = better, but diminishing returns after 64
+  lora_alpha: 64
+  
+  # Which model layers to apply LoRA to
+  # Default targets: q_proj, k_proj, v_proj (attention), gate_proj, up_proj, down_proj (MLP)
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  
+  # Memory optimization via gradient checkpointing
+  # Options: "unsloth" (recommended), true, false
+  # Reduces memory ~40% at cost of 20% slower training
+  use_gradient_checkpointing: "unsloth"
+  
+  # Random seed for reproducibility
+  random_state: 3407
+
+# ============================================================================
+# 4. GRPO (Group Relative Policy Optimization) TRAINING
+# ============================================================================
+grpo:
+  # Use vLLM for fast generation during training
+  # Recommended: true (much faster than default inference)
+  use_vllm: true
+  
+  # Learning rate for LoRA adapter training
+  # Typical range: 1e-6 to 1e-4
+  # Lower = more stable but slower convergence
+  # Start with 5e-6 and adjust based on loss curves
+  learning_rate: 0.000005
+  
+  # Adam optimizer beta1 (momentum)
+  adam_beta1: 0.9
+  
+  # Adam optimizer beta2 (RMSprop)
+  adam_beta2: 0.99
+  
+  # L2 regularization weight
+  # Prevents overfitting (0.01-0.5 is typical)
+  weight_decay: 0.1
+  
+  # Warmup ratio: linear learning rate ramp-up
+  # Warmup steps = num_steps * warmup_ratio
+  warmup_ratio: 0.1
+  
+  # Learning rate scheduler
+  # Options: "cosine", "linear", "constant"
+  lr_scheduler_type: "cosine"
+  
+  # Optimizer type
+  # "adamw_8bit" = memory-efficient AdamW
+  optim: "adamw_8bit"
+  
+  # Log training metrics every N steps
+  logging_steps: 1
+  
+  # Batch size per GPU per step
+  # Decrease if CUDA OOM errors occur
+  # Note: GRPO generates multiple completions per sample internally
+  per_device_train_batch_size: 1
+  
+  # Gradient accumulation steps
+  # Effective batch = per_device_train_batch_size * gradient_accumulation_steps
+  gradient_accumulation_steps: 1
+  
+  # Number of candidate responses generated per prompt (for GRPO)
+  # Higher = better reward signal but slower training
+  # Recommended: 4-8
+  num_generations: 4
+  
+  # Maximum tokens in the prompt (MPC scenario + state)
+  max_prompt_length: 500
+  
+  # Maximum tokens in model's MPC parameter response
+  max_completion_length: 750
+  
+  # Total training steps
+  # Dataset size is usually small, so 500-1000 is reasonable
+  max_steps: 750
+  
+  # Save checkpoint every N steps
+  # Allows recovery and comparison of different checkpoints
+  save_steps: 250
+  
+  # Gradient clipping: prevents exploding gradients
+  # Typical: 0.1-1.0
+  max_grad_norm: 0.1
+
+# ============================================================================
+# 5. DATASET CONFIGURATION
+# ============================================================================
+dataset:
+  # Number of memory items to retrieve from RAG
+  # Higher = richer context but slower inference
+  # Recommended: 3-5
+  mem_nb: 5
+  
+  # Shuffle dataset at each epoch
+  shuffle: true
+  
+  # Optional: path to raw robot states directory
+  # If set, will generate dataset from raw trajectories
+  # raw_robot_states_dir: "train/dataset/rl_decision/raw_states"
+
+# ============================================================================
+# 6. EVALUATION CONFIGURATION
+# ============================================================================
+evaluation:
+  # Enable periodic evaluation during training
+  evaluation_on: true
+  
+  # Evaluate on test set every N training steps
+  eval_interval_steps: 250
+
+# ============================================================================
+# 7. API TOKENS (Environment Variables)
+# ============================================================================
+# These are loaded from your .env file in the project root
+tokens:
+  # Hugging Face token: download model weights
+  huggingfacehub: "${HUGGINGFACEHUB_API_TOKEN}"
+  
+  # OpenAI token: reward computation and RAG augmentation
+  openai: "${OPENAI_API_TOKEN}"
+  
+  # Weights & Biases token: experiment tracking (optional)
+  wandb: "${WANDB_API_KEY}"
+
+# ============================================================================
+# QUICK TUNING GUIDE
+# ============================================================================
+# 
+# For SLOWER but BETTER training:
+#   - Increase num_generations: 4 → 8
+#   - Increase learning_rate: 5e-6 → 1e-5
+#   - Increase max_steps: 750 → 1500
+#   - Increase lora_rank: 64 → 128
+#
+# For FASTER but ACCEPTABLE training:
+#   - Decrease num_generations: 4 → 2
+#   - Decrease learning_rate: 5e-6 → 2e-6
+#   - Decrease lora_rank: 64 → 32
+#   - Decrease max_steps: 750 → 300
+#
+# For MEMORY-CONSTRAINED training (GPU < 16GB):
+#   - load_in_4bit: true
+#   - per_device_train_batch_size: 1
+#   - gpu_memory_utilization: 0.3
+#   - lora_rank: 32
+#   - num_generations: 2
+#
+# For MULTI-GPU training:
+#   - per_device_train_batch_size: 2-4 (per GPU)
+#   - gradient_accumulation_steps: 1 (let DistributedDataParallel handle it)
+#
+# ============================================================================
