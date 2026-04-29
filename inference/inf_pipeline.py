@@ -1,9 +1,20 @@
 from transformers import Pipeline, BitsAndBytesConfig
-from unsloth import FastLanguageModel
-from unsloth.chat_templates import get_chat_template
 import os, time
 import numpy as np
 import torch
+
+# Try to import Unsloth (optimized for GPU), fall back to standard transformers for CPU
+try:
+    from unsloth import FastLanguageModel
+    from unsloth.chat_templates import get_chat_template
+    UNSLOTH_AVAILABLE = True
+except (NotImplementedError, ImportError) as e:
+    print(f"[WARN] Unsloth not available ({type(e).__name__}): Using standard transformers instead.")
+    print("       Note: Inference will be slower on CPU. For best performance, run on GPU (HPRC).")
+    UNSLOTH_AVAILABLE = False
+    # Provide fallback for CPU inference
+    FastLanguageModel = None
+    get_chat_template = None
 
 CHAT_TEMPLATE_OPTIONS = ["phi-3", "qwen-2.5"]
 
@@ -31,26 +42,61 @@ class RaceLLMPipeline(Pipeline):
             bnb_4bit_compute_dtype=dtype,
         )
         
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name=model_dir,
-            max_seq_length=max_seq_length,
-            dtype=dtype,
-            quantization_config=quantization_config,
-        )
-        FastLanguageModel.for_inference(model)
+        # Use Unsloth if available (GPU), otherwise fall back to standard transformers (CPU)
+        if UNSLOTH_AVAILABLE and FastLanguageModel is not None:
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=model_dir,
+                max_seq_length=max_seq_length,
+                dtype=dtype,
+                quantization_config=quantization_config,
+            )
+            FastLanguageModel.for_inference(model)
+        else:
+            # CPU fallback using standard transformers
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from peft import PeftModel
+            import os
+            
+            print("Loading base model (CPU mode - may be slow)...")
+            base_model_name = "Qwen/Qwen2.5-3B-Instruct"
+            
+            # Set cache directory to avoid re-downloading
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+            print(f"  Cache dir: {cache_dir}")
+            print(f"  First run will download ~6GB. Subsequent runs will use cache.")
+            
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model_name,
+                quantization_config=quantization_config if load_in_4bit else None,
+                torch_dtype=dtype,
+                device_map="cpu",
+                cache_dir=cache_dir
+            )
+            
+            # Load LoRA adapter
+            print(f"Loading LoRA adapter from {model_dir}...")
+            model = PeftModel.from_pretrained(model, model_dir)
+            model = model.merge_and_unload()
+            
+            tokenizer = AutoTokenizer.from_pretrained(base_model_name)
         
         if chat_template == "phi-3":
-            tokenizer = get_chat_template(
-                tokenizer,
-                chat_template=chat_template,
-                mapping={"role": "from", "content": "value", "user": "human", "assistant": "gpt"},
-            )
+            if UNSLOTH_AVAILABLE and get_chat_template is not None:
+                tokenizer = get_chat_template(
+                    tokenizer,
+                    chat_template=chat_template,
+                    mapping={"role": "from", "content": "value", "user": "human", "assistant": "gpt"},
+                )
         elif chat_template == "qwen-2.5":
-            tokenizer = get_chat_template(
-                tokenizer,
-                chat_template="qwen-2.5",
-                mapping={"role": "role", "content": "content", "user": "user", "assistant": "assistant"},
-            )
+            if UNSLOTH_AVAILABLE and get_chat_template is not None:
+                tokenizer = get_chat_template(
+                    tokenizer,
+                    chat_template="qwen-2.5",
+                    mapping={"role": "role", "content": "content", "user": "user", "assistant": "assistant"},
+                )
+            else:
+                # Manual template setup for CPU mode
+                tokenizer.chat_template = "{% for message in messages %}{% if message['role'] == 'user' %}{{ '<|im_start|>user\\n' + message['content'] + '<|im_end|>\\n<|im_start|>assistant\\n' }}{% elif message['role'] == 'assistant' %}{{ message['content'] + '<|im_end|>' }}{% endif %}{% endfor %}"
         else:
             raise ValueError(f"Chat template {chat_template} not recognized. Please use 'phi-3' or 'qwen-2.5'.")
         

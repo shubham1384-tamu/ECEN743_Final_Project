@@ -1,32 +1,143 @@
-numpy==1.26.4
-wandb==0.19.10
-
-#Huggingface
-python-dotenv==1.1.0
-transformers==4.50.3
-pillow==11.1.0
-#flash-attn==2.7.4.post1
-
-#Langchain
-langchain==0.3.22
-langchain-experimental==0.3.4
-unstructured[md]
-sentence-transformers==4.0.1
-chromadb==0.6.3
-langchain-openai==0.3.11
-
-#Unsloth
-unsloth==2025.3.3
-xformers==0.0.29.post2
-trl==0.15.2
-peft==0.15.1
-triton==3.2.0
-accelerate==1.5.2
-bitsandbytes==0.45.4
-vllm==0.8.2
-
-#ROS stuff
-roslibpy==1.8.1
-
-#misc
-matplotlib==3.10.1
+Package                                  Version     Editable project location
+---------------------------------------- ----------- -------------------------------------------------------------------
+aiohappyeyeballs                         2.6.1
+aiohttp                                  3.13.5
+aiosignal                                1.4.0
+annotated-doc                            0.0.4
+annotated-types                          0.7.0
+anyio                                    4.13.0
+asgiref                                  3.11.1
+attrs                                    26.1.0
+backoff                                  2.2.1
+bcrypt                                   5.0.0
+build                                    1.4.3
+certifi                                  2026.2.25
+charset-normalizer                       3.4.7
+chroma-hnswlib                           0.7.6
+chromadb                                 0.6.3
+click                                    8.3.2
+cloudpickle                              3.1.2
+dataclasses-json                         0.6.7
+distro                                   1.9.0
+durationpy                               0.10
+f110_gym                                 0.2.1       /Users/shubham/Documents/ECEN743_Final_Project/external/f1tenth_gym
+Farama-Notifications                     0.0.4
+fastapi                                  0.136.0
+filelock                                 3.28.0
+flatbuffers                              25.12.19
+frozenlist                               1.8.0
+fsspec                                   2026.3.0
+future                                   1.0.0
+googleapis-common-protos                 1.74.0
+grpcio                                   1.80.0
+gym                                      0.26.2
+gym-notices                              0.1.0
+gymnasium                                1.2.3
+h11                                      0.16.0
+hf-xet                                   1.4.3
+httpcore                                 1.0.9
+httptools                                0.7.1
+httpx                                    0.28.1
+httpx-sse                                0.4.3
+huggingface_hub                          0.36.2
+idna                                     3.11
+importlib_metadata                       8.7.1
+importlib_resources                      7.1.0
+Jinja2                                   3.1.6
+jiter                                    0.14.0
+joblib                                   1.5.3
+jsonpatch                                1.33
+jsonpointer                              3.1.1
+kubernetes                               35.0.0
+langchain                                0.3.22
+langchain-community                      0.3.20
+langchain-core                           0.3.84
+langchain-experimental                   0.3.4
+langchain-huggingface                    0.3.1
+langchain-openai                         0.3.11
+langchain-text-splitters                 0.3.11
+langsmith                                0.3.45
+llvmlite                                 0.47.0
+markdown-it-py                           4.0.0
+MarkupSafe                               3.0.3
+marshmallow                              3.26.2
+mdurl                                    0.1.2
+mmh3                                     5.2.1
+mpmath                                   1.3.0
+multidict                                6.7.1
+mypy_extensions                          1.1.0
+networkx                                 3.6.1
+numba                                    0.65.0
+numpy                                    2.4.4
+oauthlib                                 3.3.1
+onnxruntime                              1.24.4
+openai                                   1.109.1
+opentelemetry-api                        1.41.0
+opentelemetry-exporter-otlp-proto-common 1.41.0
+opentelemetry-exporter-otlp-proto-grpc   1.41.0
+opentelemetry-instrumentation            0.62b0
+opentelemetry-instrumentation-asgi       0.62b0
+opentelemetry-instrumentation-fastapi    0.62b0
+opentelemetry-proto                      1.41.0
+opentelemetry-sdk                        1.41.0
+opentelemetry-semantic-conventions       0.62b0
+opentelemetry-util-http                  0.62b0
+orjson                                   3.11.8
+overrides                                7.7.0
+packaging                                25.0
+pandas                                   3.0.2
+pillow                                   12.2.0
+pip                                      26.0.1
+posthog                                  7.12.0
+propcache                                0.4.1
+protobuf                                 6.33.6
+pydantic                                 2.13.2
+pydantic_core                            2.46.2
+pydantic-settings                        2.13.1
+pyglet                                   1.5.20
+Pygments                                 2.20.0
+PyOpenGL                                 3.1.10
+PyPika                                   0.51.1
+pyproject_hooks                          1.2.0
+python-dateutil                          2.9.0.post0
+python-dotenv                            1.1.0
+PyYAML                                   6.0.3
+regex                                    2026.4.4
+requests                                 2.33.1
+requests-oauthlib                        2.0.0
+requests-toolbelt                        1.0.0
+rich                                     15.0.0
+safetensors                              0.7.0
+scikit-learn                             1.8.0
+scipy                                    1.17.1
+sentence-transformers                    4.0.1
+setuptools                               59.6.0
+shellingham                              1.5.4
+six                                      1.17.0
+sniffio                                  1.3.1
+SQLAlchemy                               2.0.49
+starlette                                1.0.0
+sympy                                    1.14.0
+tenacity                                 9.1.4
+threadpoolctl                            3.6.0
+tiktoken                                 0.12.0
+tokenizers                               0.22.2
+torch                                    2.11.0
+tqdm                                     4.67.3
+transformers                             4.57.6
+typer                                    0.24.1
+typing_extensions                        4.15.0
+typing-inspect                           0.9.0
+typing-inspection                        0.4.2
+urllib3                                  2.6.3
+uuid_utils                               0.14.1
+uvicorn                                  0.44.0
+uvloop                                   0.22.1
+watchfiles                               1.1.1
+websocket-client                         1.9.0
+websockets                               16.0
+wheel                                    0.46.3
+wrapt                                    2.1.2
+yarl                                     1.23.0
+zipp                                     3.23.1
+zstandard                                0.23.0

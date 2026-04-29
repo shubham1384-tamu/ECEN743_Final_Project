@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """
-LLM MPC Training on F1TENTH Gym Environment
+LLM MPC Training on F1TENTH Gym Environment - IMPROVED REWARDS VERSION
 
 This script trains an LLM to generate MPC (Model Predictive Control) parameters
-for autonomous racing using the F1TENTH gym simulator.
+for autonomous racing using the F1TENTH gym simulator with IMPROVED REWARD FUNCTIONS.
+
+Improvements over original:
+  - Multi-horizon driving evaluation (50 + 200 steps)
+  - Multi-metric scoring (lateral, speed, smoothness, boundary safety)
+  - Explicit collision penalty
+  - Graduated format/extraction rewards
+  - Parameter range validation bonus
 
 Usage:
-    python train_mpc_f1tenth.py --config train/config/rl_mpc_train_documented.yaml
+    python train_mpc_f1tenth_improved.py --config train/config/rl_mpc_train_documented.yaml
 
 Features:
     - GRPO (Group Relative Policy Optimization) training
     - LoRA-based efficient fine-tuning
-    - Multi-reward functions (format, extraction, names, driving performance)
+    - Enhanced reward functions with multi-objective optimization
     - Weights & Biases integration for experiment tracking
     - F1TENTH gym environment integration
 """
@@ -50,7 +57,8 @@ from dotenv import load_dotenv, find_dotenv
 # ============================================================================
 from train.utils.mpc.mpc_dataset import MPCDatasetGRPO
 import train.utils.mpc.eval_driving_f1tenth as eval_driving
-from llm_mpc_render import RaceLLMMPC as RaceLLM
+from llm_mpc_render_improved import RaceLLMMPC as RaceLLM
+from train.improved_reward_functions import ImprovedRewardFunctions
 
 # ============================================================================
 # Setup
@@ -118,163 +126,13 @@ def chat_mapping(chat_template: str = "qwen-2.5") -> dict:
 
 
 # ============================================================================
-# Reward Functions
-# ============================================================================
-class RewardFunctions:
-    """Collection of reward functions for GRPO training."""
-    
-    def __init__(self, race_llm, tokenizer, use_wandb=False, w1=1.0, w6=1.0):
-        self.race_llm = race_llm
-        self.tokenizer = tokenizer
-        self.use_wandb = use_wandb
-        self.w1 = w1
-        self.w6 = w6
-        self.step = 0
-
-    def format_reward(self, prompts, completions, **kwargs) -> list:
-        """Reward for proper XML formatting in model outputs."""
-        reasoning_scores = np.zeros(len(prompts))
-        answer_scores = np.zeros(len(prompts))
-        
-        for i, completion in enumerate(completions):
-            reasoning_scores[i] = self._check_tags(completion, "reasoning")
-            answer_scores[i] = self._check_tags(completion, "answer")
-        
-        reward = (reasoning_scores + answer_scores) / 2.0 * self.w6
-        print(f"[Format Reward] Mean: {reward.mean():.3f}, Min: {reward.min():.3f}, Max: {reward.max():.3f}")
-        return [reward]
-
-    def extraction_reward(self, prompts, completions, **kwargs) -> list:
-        """Reward for successfully extracting MPC parameters."""
-        rewards = np.zeros(len(prompts))
-        
-        for i, completion in enumerate(completions):
-            extracted, _ = self.race_llm._sanitize_tune_output(completion)
-            rewards[i] = 1.0 if extracted is not None else 0.0
-        
-        print(f"[Extraction Reward] Success rate: {rewards.mean():.1%}")
-        return [rewards]
-
-    def param_name_reward(self, prompts, completions, **kwargs) -> list:
-        """Reward for correctly named MPC parameters."""
-        rewards = np.zeros(len(prompts))
-        
-        for i, completion in enumerate(completions):
-            extracted, _ = self.race_llm._sanitize_tune_output(completion)
-            if extracted is None:
-                rewards[i] = 0.0
-                continue
-            
-            if not extracted:
-                rewards[i] = 1.0
-                continue
-            
-            correct = sum(1 for p in extracted.keys() if isinstance(p, str) and p in MPC_PARAM_NAMES)
-            rewards[i] = correct / len(extracted)
-        
-        print(f"[Param Name Reward] Mean: {rewards.mean():.3f}")
-        return [rewards]
-
-    def driving_reward(self, prompts, completions, f1tenth_steps=50, f1tenth_map="vegas", 
-                       baseline_rmse=2.0, **kwargs) -> list:
-        """Reward based on F1TENTH gym driving performance."""
-        print("=" * 60)
-        print("[Driving Reward] Evaluating MPC parameters on F1TENTH gym...")
-        print("=" * 60)
-        
-        # Handle baseline_rmse potentially being passed as list from trainer
-        if isinstance(baseline_rmse, (list, tuple)):
-            baseline_rmse = baseline_rmse[0] if baseline_rmse else 2.0
-        baseline_rmse = float(baseline_rmse)
-        
-        rewards = np.zeros(len(prompts))
-        
-        for i, completion in enumerate(completions):
-            # Reset environment
-            self.race_llm.reset_f1tenth()
-            
-            # Extract and validate parameters
-            extracted, _ = self.race_llm._sanitize_tune_output(completion)
-            if extracted is None:
-                print(f"  Sample {i}: Failed to extract parameters → reward = 0")
-                rewards[i] = 0.0
-                continue
-            
-            # Sanitize parameter names
-            sanitized = self._sanitize_params(extracted)
-            full_params = {**self.race_llm.DEFAULT_MPC_PARAMS, **sanitized}
-            
-            # Validate that all required parameters are non-None
-            if not self._validate_params(full_params):
-                print(f"  Sample {i}: Invalid parameters (None values) → reward = 0")
-                rewards[i] = 0.0
-                continue
-            
-            # Run simulation
-            trajectory_d = []
-            for step in range(f1tenth_steps):
-                obs, done = self.race_llm._step_f1tenth(full_params)
-                odom = self.race_llm._get_f1tenth_odom()
-                trajectory_d.append(abs(odom['d_pos'][-1]))
-                if done:
-                    break
-            
-            # Compute RMSE and reward
-            rmse = float(np.mean(trajectory_d)) if trajectory_d else 10.0
-            rel_improvement = (baseline_rmse - rmse) / baseline_rmse
-            rewards[i] = float(np.clip(rel_improvement, -4, 4))
-            
-            status = "✓" if rewards[i] > 0 else "✗"
-            print(f"  Sample {i}: RMSE={rmse:.3f}, reward={rewards[i]:.3f} {status}")
-            
-            if self.race_llm.f1tenth_done:
-                self.race_llm.reset_f1tenth()
-        
-        print(f"[Driving Reward] Mean: {rewards.mean():.3f}, Min: {rewards.min():.3f}")
-        print("=" * 60)
-        return [rewards * self.w1]
-
-    @staticmethod
-    def _check_tags(text: str, tag: str) -> float:
-        """Check if XML tags are properly formatted."""
-        open_count = text.count(f"<{tag}>")
-        close_count = text.count(f"</{tag}>")
-        return 1.0 if open_count == close_count == 1 else 0.0
-
-    @staticmethod
-    def _sanitize_params(extracted: dict) -> dict:
-        """Sanitize parameter names and values. Convert to float."""
-        sanitized = {}
-        for param, value in extracted.items():
-            if param in MPC_PARAM_NAMES:
-                try:
-                    # Ensure value is float (LLM may return strings)
-                    sanitized[param] = float(value)
-                except (TypeError, ValueError):
-                    # Skip invalid values
-                    pass
-        return sanitized
-
-    @staticmethod
-    def _validate_params(params: dict) -> bool:
-        """Validate that all parameters are non-None and numeric."""
-        for key, value in params.items():
-            if value is None:
-                return False
-            try:
-                float(value)  # Ensure it's numeric
-            except (TypeError, ValueError):
-                return False
-        return True
-
-
-# ============================================================================
 # Training
 # ============================================================================
 def train(config_path: str):
-    """Main training function."""
+    """Main training function with improved rewards."""
     print("\n" + "=" * 70)
     print("LLM MPC Training on F1TENTH Gym Environment")
+    print("WITH IMPROVED REWARD FUNCTIONS")
     print("=" * 70)
     
     cfg = load_config(config_path)
@@ -297,7 +155,13 @@ def train(config_path: str):
     w1 = cfg.get("reward", {}).get("w1", 1.0)
     w6 = cfg.get("reward", {}).get("w6", 1.0)
     
-    experiment_name = f"{base_model.split('/')[-1]}_GRPO_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+    # Improved reward weights (from config or defaults)
+    w_lateral = cfg.get("reward", {}).get("w_lateral", 0.40)
+    w_speed = cfg.get("reward", {}).get("w_speed", 0.30)
+    w_smoothness = cfg.get("reward", {}).get("w_smoothness", 0.20)
+    w_boundary = cfg.get("reward", {}).get("w_boundary", 0.10)
+    
+    experiment_name = f"{base_model.split('/')[-1]}_GRPO_IMPROVED_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
     
     # ── Initialize Weights & Biases ───────────────────────────────────────
     use_wandb = init_wandb()
@@ -307,6 +171,11 @@ def train(config_path: str):
         wandb.init(project=wandb_project, config=cfg, name=experiment_name)
     
     print(f"[Training] Experiment: {experiment_name}\n")
+    print("[Rewards] Using IMPROVED reward functions:")
+    print(f"  - Multi-horizon: 50 + 200 steps")
+    print(f"  - Multi-metric: lateral={w_lateral:.2f}, speed={w_speed:.2f}, smoothness={w_smoothness:.2f}, boundary={w_boundary:.2f}")
+    print(f"  - Explicit collision penalty: -4.0")
+    print()
     
     # ── Load model ────────────────────────────────────────────────────────
     print(f"[Model] Loading {base_model}...")
@@ -350,14 +219,20 @@ def train(config_path: str):
     )
     print(f"[F1TENTH] ✓ Environment initialized\n")
     
-    # ── Setup reward functions ────────────────────────────────────────────
-    reward_funcs_obj = RewardFunctions(
+    # ── Setup IMPROVED reward functions ───────────────────────────────────
+    print("[Rewards] Initializing ImprovedRewardFunctions...")
+    reward_funcs_obj = ImprovedRewardFunctions(
         race_llm=race_llm,
         tokenizer=tokenizer,
         use_wandb=use_wandb,
         w1=w1,
         w6=w6,
+        w_lateral=w_lateral,
+        w_speed=w_speed,
+        w_smoothness=w_smoothness,
+        w_boundary=w_boundary,
     )
+    print(f"[Rewards] ✓ Initialized\n")
     
     # ── Load dataset ──────────────────────────────────────────────────────
     print("[Dataset] Loading training data...")
@@ -406,6 +281,7 @@ def train(config_path: str):
                 reward_funcs_obj.format_reward,
                 reward_funcs_obj.extraction_reward,
                 reward_funcs_obj.param_name_reward,
+                reward_funcs_obj.param_range_reward,  # NEW: Parameter range bonus
             ],
             args=training_args,
             train_dataset=dataset,
@@ -437,12 +313,19 @@ def train(config_path: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Train LLM for MPC parameter generation on F1TENTH gym",
+        description="Train LLM for MPC parameter generation on F1TENTH gym (IMPROVED REWARDS)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python train_mpc_f1tenth.py --config train/config/rl_mpc_train_documented.yaml
-  python train_mpc_f1tenth.py --config train/config/rl_mpc_train.yaml
+  python train_mpc_f1tenth_improved.py --config train/config/rl_mpc_train_documented.yaml
+  python train_mpc_f1tenth_improved.py --config train/config/rl_mpc_train.yaml
+
+This script uses IMPROVED reward functions with:
+  - Multi-horizon evaluation (50 + 200 steps)
+  - Multi-metric scoring (lateral, speed, smoothness, boundary)
+  - Explicit collision penalty
+  - Graduated rewards instead of binary
+  - Parameter range validation
         """
     )
     parser.add_argument(

@@ -4,7 +4,7 @@
 
 #logs
 **/logs/*.txt
-**/logs/**/
+/logs
 
 #images
 *.png
@@ -40,3 +40,5 @@ tests/mpc_tester/eval/*
 #train outputs
 train/outputs/*
 train/dataset/combined/*
+
+*.zip
